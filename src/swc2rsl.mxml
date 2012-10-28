@@ -1,0 +1,278 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:WindowedApplication xmlns:fx="http://ns.adobe.com/mxml/2009"
+					   xmlns:s="library://ns.adobe.com/flex/spark"
+					   xmlns:mx="library://ns.adobe.com/flex/mx"
+					   xmlns:local="*"
+					   xmlns:skin="skin.*"
+					   width="500" height="270" backgroundColor="#444444"
+					   minHeight="270" minWidth="500"
+					   currentState="state_default" initialize="initializeHandler(event)"
+					   skinClass="skin.CustomWindowedApplicationSkin" status="v.1.0.0"
+					   backgroundColor.state_help="#999999">
+	
+
+	<fx:Script>
+		<![CDATA[
+			import command.ITask;
+			import command.TaskCleanUp;
+			import command.TaskCopySwc;
+			import command.TaskExtractSwf;
+			import command.TaskGroup;
+			import command.TaskOptimizeSwf;
+			import command.TaskUpdateSwcDigest;
+			
+			import model.UserArgs;
+			
+			import mx.collections.ArrayCollection;
+			import mx.collections.IList;
+			import mx.controls.Alert;
+			import mx.events.FlexEvent;
+			import mx.utils.ArrayUtil;
+			
+			import spark.events.IndexChangeEvent;
+			
+			public static const LIBRARY_SWF:String = "library.swf";
+			public static const OPTIMZER_CMD:String = "optimizer.exe";
+			public static const DIGEST_EXE:String = "digest.exe";
+			
+			[Embed(source="/assets/help-content.png")]
+			public static const HELP_CONTENT:Class;
+			
+			private var fileFdkHome:File = new File();
+			private var fileSwc:File = new File();
+			private var fileOutput:File = new File();
+			
+			private var swcFileHasBeenSelected:Boolean = false;
+			
+			[Bindable]
+			private var comboOutputDataProvider:IList = new ArrayCollection([UserArgs.DEFAULT_OUTPUT_ITEM, UserArgs.CUSTOM_OUTPUT_ITEM]);
+			
+			[Bindable]
+			private var args:UserArgs = new UserArgs();
+			
+			[Bindable]
+			private var processRunning:Boolean = false;
+			
+			protected function initializeHandler(event:FlexEvent):void
+			{
+				fileFdkHome.addEventListener(Event.SELECT, fileFdkHomeSelectHandler);
+				fileSwc.addEventListener(Event.SELECT, fileSwcSelectHandler);
+				fileOutput.addEventListener(Event.SELECT, fileOutputSelectHandler);
+			}
+			
+			private function fileFdkHomeSelectHandler(event:Event):void
+			{
+				args.fdkHome = fileFdkHome.nativePath;
+				groupFdkHome.toolTip=fileFdkHome.nativePath;
+				
+				// validation
+				var bin:File = new File(args.fdkHome+File.separator+"bin");
+				if (bin.exists)
+				{
+					var listing:Array = bin.getDirectoryListing();
+					var containsOptimzerCmd:Boolean = false;
+					var containsDigestCmd:Boolean = false;
+					for each (var f:File in listing)
+					{
+						if (f.name == OPTIMZER_CMD) 
+						{
+							containsOptimzerCmd = true;
+						}
+						if (f.name == DIGEST_EXE) 
+						{
+							containsDigestCmd = true;
+						}
+					}
+					if (!containsOptimzerCmd)
+					{
+						inputFdkHome.errorString = "This directory doesn't contains optimzer.exe";					
+					} 
+					else if (!containsDigestCmd)
+					{
+						inputFdkHome.errorString = "This directory doesn't contains digest.exe";	
+					}
+					else
+					{
+						// ok
+						inputFdkHome.errorString = null;
+					}
+				}
+				else
+				{
+					inputFdkHome.errorString = "This directory doesn't contains any bin subfolder";	
+				}
+			}
+			
+			private function fileSwcSelectHandler(event:Event):void
+			{
+				args.swcFileDir = fileSwc.parent.nativePath;
+				args.swcFilePath = fileSwc.nativePath;
+				groupSwcFile.toolTip=fileSwc.nativePath;
+				swcFileHasBeenSelected = true;
+				var name:String = fileSwc.name;
+				var splitted:Array = name.split("-");
+				if (args.artifactId == null)
+				{					
+					if (splitted.length == 1) 
+					{
+						args.artifactId = name.substring(0, name.indexOf(fileSwc.extension)-1);
+					}
+					else 
+					{
+						args.artifactId = splitted[0];
+					}
+				}				
+				if (args.version == null)
+				{
+					if (splitted.length > 1) 
+					{
+						args.artifactId = splitted[1];
+					}
+				}
+			}
+			
+			private function fileOutputSelectHandler(event:Event):void
+			{
+				comboOutputDataProvider.setItemAt(fileOutput.nativePath, 1);
+				args.outputDir = fileOutput.nativePath;				
+				groupOutput.toolTip=fileOutput.nativePath;
+			}
+			
+			protected function comboOutputDir_changeHandler(event:IndexChangeEvent):void
+			{
+				if (event.newIndex == event.oldIndex) return;				
+				
+				if (comboOutputDir.selectedItem == UserArgs.DEFAULT_OUTPUT_ITEM)
+				{
+					if (swcFileHasBeenSelected)
+					{
+						args.outputDir = fileSwc.parent.nativePath;
+					}					
+				} 
+			}
+			
+			protected function buttonProcess_clickHandler(event:MouseEvent):void
+			{
+				processRunning = true;
+				cursorManager.setBusyCursor();
+				var outputFileName:String = args.artifactId+(args.version?("-"+args.version):"");
+				// create task #1 : unzip swf from swc
+				var swcPath:String = args.swcFilePath;
+				var outputDir:String = args.outputDir == UserArgs.DEFAULT_OUTPUT_ITEM ? args.swcFileDir : args.outputDir;
+				outputDir = outputDir+File.separator+"rsl";
+				var task1:ITask = new TaskExtractSwf(swcPath, outputDir);
+				// create task #2 : optimize extracted swf
+				var libSwfPath:String = outputDir + File.separator + "library.swf";
+				var outputRslPath:String = outputDir + File.separator + outputFileName + ".swf";
+				var task2:ITask = new TaskOptimizeSwf(args.fdkHome, libSwfPath, outputRslPath);
+				// create task #3 : create a copy of the original swc
+				var swcCopyPath:String = outputDir + File.separator + outputFileName +".swc";
+				var task3:ITask = new TaskCopySwc(swcPath, swcCopyPath);
+				// create task #4 : update swc digest using new rsl swf
+				var rslPath:String = outputRslPath;
+				var task4:ITask = new TaskUpdateSwcDigest(args.fdkHome, swcCopyPath, outputRslPath);
+				// create task #5 : cleanup output directory
+				var task5:ITask = new TaskCleanUp(outputDir);
+				// setup tasks group
+				var taskGroup:TaskGroup = new TaskGroup();
+				taskGroup.addTask(task1);
+				taskGroup.addTask(task2);
+				taskGroup.addTask(task3);
+				taskGroup.addTask(task4);
+				taskGroup.addTask(task5);
+				
+				// launch process
+				taskGroup.executeAllStuff(onComplete, onError);
+			}
+			
+			private function onComplete():void
+			{
+				processRunning = false;
+				cursorManager.removeBusyCursor();
+				
+			}
+			private function onError():void
+			{
+				onComplete();
+				Alert.show("Sorry but an unexpected error occurred", "Error", Alert.OK);
+				
+			}
+			
+		]]>
+	</fx:Script>
+	<s:states>
+		<s:State name="state_default"/>
+		<s:State name="state_help"/>
+	</s:states>
+
+	<fx:Declarations>
+		<!-- Place non-visual elements (e.g., services, value objects) here -->
+	</fx:Declarations>	
+	
+	<s:layout>
+		<s:VerticalLayout gap="5" paddingTop="15" paddingLeft="15" paddingRight="15" paddingBottom="10"/>
+	</s:layout>
+	<s:layout.state_help>
+		<s:BasicLayout/>
+	</s:layout.state_help>
+	
+	<s:HGroup includeIn="state_default" width="100%">
+		<s:Label id="labelTitle" fontSize="22" fontWeight="bold" text="swc2rsl" />
+		<s:Spacer width="100%" />
+		<mx:LinkButton icon="@Embed('/assets/help.png')" 
+					   toolTip="Help"
+					   rollOverColor="{labelTitle.getStyle('color')}"
+					   click="this.currentState='state_help'" />
+	</s:HGroup>
+	<s:Label includeIn="state_default" fontStyle="italic"
+			 text="Create RSL version from a SWC library"/>
+	<s:Form includeIn="state_default" width="100%">
+		<s:layout>
+			<s:FormLayout gap="-14"/>
+		</s:layout>   
+		<s:FormItem width="100%" label="Adobe Flex SDK Home">
+			<s:HGroup width="100%" id="groupFdkHome" verticalAlign="middle">
+				<s:TextInput id="inputFdkHome" width="100%" enabled="false" text="{args.fdkHome}" />
+				<skin:BrowseButton click="fileFdkHome.browseForDirectory('Select your Flex SDK home directory')"/>
+			</s:HGroup>			
+		</s:FormItem>
+		<s:FormItem width="100%" label="SWC library file">
+			<s:HGroup width="100%" id="groupSwcFile" verticalAlign="middle">
+				<s:TextInput id="inputSwcFile" text="{args.swcFilePath}" width="100%" enabled="false"/>
+				<skin:BrowseButton click="fileSwc.browse([new FileFilter('SWC file','*.swc')])"/>
+			</s:HGroup>			
+		</s:FormItem>
+		<s:FormItem width="100%" label="Output directory">
+			<s:HGroup width="100%" id="groupOutput" verticalAlign="middle">
+				<!--s:TextInput text="{args.outputDir}" width="100%" enabled="false" /-->
+				<s:DropDownList id="comboOutputDir" width="100%"
+								dataProvider="{comboOutputDataProvider}" 
+								selectedItem="{args.outputDir}"
+								change="comboOutputDir_changeHandler(event)"/>
+				<skin:BrowseButton click="fileOutput.browseForDirectory('Select your output directory')"
+								   enabled="{comboOutputDir.selectedItem!=UserArgs.DEFAULT_OUTPUT_ITEM}"/>
+			</s:HGroup>			
+		</s:FormItem>
+		<s:FormItem width="100%" label="Ouput Artifact GAV">
+			<s:HGroup width="100%" verticalAlign="middle">
+				<s:Label text="artifactId" />
+				<s:TextInput id="artifactId" width="100%" text="@{args.artifactId}"/>	
+				<s:Label text="version" />
+				<s:TextInput id="artifactVersion" width="50" text="@{args.version}"/>
+			</s:HGroup>
+		</s:FormItem>			
+	</s:Form>
+	<s:HGroup includeIn="state_default" width="100%" horizontalAlign="right">
+		<s:Button id="buttonProcess" label="Process" icon="@Embed('/assets/arrow-right.png')"
+				  click="buttonProcess_clickHandler(event)" useHandCursor="true" buttonMode="true"
+				  enabled="{inputFdkHome.text &amp;&amp; inputSwcFile &amp;&amp; artifactId &amp;&amp; !processRunning}"/>
+	</s:HGroup>
+	<s:Image includeIn="state_help" horizontalCenter="0" source="{HELP_CONTENT}" verticalCenter="35"/>
+	<s:Button includeIn="state_help" x="10" y="219" label="Back" click="this.currentState=''"
+			  useHandCursor="true" buttonMode="true" 
+			  icon="@Embed('/assets/arrow-left.png')"/>
+	<s:TextArea includeIn="state_help" x="34" y="19" width="434" height="65"
+				contentBackgroundAlpha="1.0" paddingBottom="10" paddingLeft="10" paddingRight="10"
+				paddingTop="10"
+				text="Swc2rsl takes a non-rsl swc library as input. First it extracts the library.swf, then it optimizes the extracted swf, finally it creates a copy of the original swc in which the digest will be updated using the optimized rsl."/>
+</s:WindowedApplication>
